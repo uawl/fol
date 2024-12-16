@@ -14,10 +14,10 @@ inductive Term where
 deriving Inhabited
 
 partial def Term.toString : Term → String
-  | .mfunc n a => s!"!{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
+  | .mfunc n a => s!"%{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
   | .bvar i => s!"#{i}"
   | .func n a => s!"{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
-  | .binder n b => s!"({n}, {b.toString})"
+  | .binder n b => s!"\\{n}, {b.toString}"
 
 instance : ToString Term := ⟨Term.toString⟩
 instance : Repr Term where
@@ -93,7 +93,7 @@ deriving Repr
 inductive RuleType where
   | leaf (conclusion : Term)
   | node (premises conclusion : RuleType)
-deriving BEq
+deriving BEq, Inhabited
 
 def RuleType.toString : RuleType → String
   | .leaf c => s!"{c}"
@@ -120,25 +120,9 @@ structure Env where
   rules : HashMap Name RuleData := {}
 deriving Repr
 
-def Env.tryAddFunc (e : Env) (name : Name) (data : FuncData) : Except String Env := do
-  if e.funcs.contains name then
-    throw "function '{name}' is already defined"
-  return { e with funcs := e.funcs.insert name data }
-
-def Env.tryAddBinder (e : Env) (name : Name) (data : BinderData) : Except String Env := do
-  if e.binders.contains name then
-    throw "binder '{name}' is already defined"
-  return { e with binders := e.binders.insert name data }
-
-def Env.tryAddRule (e : Env) (name : Name) (data : RuleData) : Except String Env := do
-  if e.rules.contains name then
-    throw "rule '{name}' is already defined"
-  return { e with rules := e.rules.insert name data }
-
-
 structure Context where
   mfuncs : HashMap Name FuncData
-deriving Repr
+deriving Repr, Inhabited
 
 structure InferContext extends Context where
   bvarSorts : Array Name
@@ -184,15 +168,38 @@ where
       else
         throw s!"unknown binder '{n}'"
 
+def Env.tryAddFunc (e : Env) (name : Name) (data : FuncData) : Except String Env := do
+  if e.funcs.contains name then
+    throw "function '{name}' is already defined"
+  return { e with funcs := e.funcs.insert name data }
+
+def Env.tryAddBinder (e : Env) (name : Name) (data : BinderData) : Except String Env := do
+  if e.binders.contains name then
+    throw "binder '{name}' is already defined"
+  return { e with binders := e.binders.insert name data }
+
+def Env.tryAddRule (e : Env) (name : Name) (data : RuleData) : Except String Env := do
+  if e.rules.contains name then
+    throw "rule '{name}' is already defined"
+  sortCheck data.type
+  return { e with rules := e.rules.insert name data }
+where
+  sortCheck
+  | .node p c => sortCheck p *> sortCheck c
+  | .leaf c => discard <| inferSort e { mfuncs := data.mfuncs, bvarSorts := #[] } c
+
 structure ProofContext extends Context where
   premises : Array RuleType
+deriving Inhabited
 
 def ProofContext.toString : ProofContext → String
   | { premises, mfuncs } =>
     "\n-- Premises --\n" ++
-    premises.foldl (s!"{·}{·}\n") "" ++
+    ((premises.mapIdx (s!"{·}: {·}")).foldl (s!"{·}{·}\n") "") ++
     "-- Meta Functions --" ++
     mfuncs.fold (fun l n t => s!"{l}\n{n} : {t}") ""
+
+instance : ToString ProofContext := ⟨ProofContext.toString⟩
 
 instance : Repr ProofContext where
   reprPrec r _ := r.toString
@@ -200,7 +207,12 @@ instance : Repr ProofContext where
 structure ProofGoal where
   context : ProofContext
   goal : RuleType
-deriving Repr
+deriving Repr, Inhabited
+
+def ProofGoal.toString : ProofGoal → String
+  | { context, goal } => s!"{context}\n-- Goal --\n{goal}"
+
+instance : ToString ProofGoal := ⟨ProofGoal.toString⟩
 
 def ProofGoal.isTrivial (goal : ProofGoal) : Bool :=
   goal.context.premises.any (· == goal.goal)
@@ -227,16 +239,30 @@ where
       findPremises c tgt (aux.push p)
   | src, tgt, _ => throw s!"failed to apply rule: {src} =?= {tgt}"
 
+def ProofGoal.applyPremise (goal : ProofGoal) (idx : Nat) : Except String (Array ProofGoal) := do
+  if let some type := goal.context.premises[idx]? then
+    let premises ← findPremises type goal.goal #[]
+    return premises.map ({ context := goal.context, goal := · })
+  else throw s!"premises index {idx} out of bound"
+where
+  findPremises : RuleType → RuleType → Array RuleType → Except String (Array RuleType)
+  | .leaf t, .leaf t', aux => if t == t' then return aux else throw s!"failed to apply rule: {t} =?= {t'}"
+  | src@(.node p c), tgt, aux =>
+    if src == tgt then
+      return aux
+    else
+      findPremises c tgt (aux.push p)
+  | src, tgt, _ => throw s!"failed to apply premise: {src} =?= {tgt}"
+
+
+def ProofGoal.introduce (goal : ProofGoal) : ProofGoal :=
+  let (prems, newGoal) := collect goal.goal #[]
+  { goal with context.premises := goal.context.premises ++ prems, goal := newGoal }
+where
+  collect : RuleType → Array RuleType → Array RuleType × RuleType
+    | .node p c, aux => collect c (aux.push p)
+    | .leaf c, aux => (aux, .leaf c)
+
+
 structure ProofState where
   goals : Array ProofGoal
-
-def testEnv := { : Env}
-  |>.tryAddFunc `imp { argSorts := #[`wff, `wff], resSort := `wff }
-  |>.bind (·.tryAddRule `ax.mp {
-      mfuncs := HashMap.ofList [(`φ, ⟨#[], `wff⟩), (`ψ, ⟨#[], `wff⟩)]
-      type := .node (.leaf (.mfunc `φ #[])) (.node (.leaf (.func `imp #[(.mfunc `φ #[]), (.mfunc `ψ #[])])) (.leaf (.mfunc `ψ #[])))
-    })
-  |>.toOption
-  |>.getD { : Env}
-
-#eval ProofGoal.applyRule { context := { mfuncs := HashMap.ofList [(`φ, ⟨#[], `wff⟩), (`ψ, ⟨#[], `wff⟩), (`χ, ⟨#[], `wff⟩)], premises := #[] }, goal := .leaf (.mfunc `χ #[]) } testEnv `ax.mp (HashMap.ofList [(`φ, .mfunc `ψ #[]), (`ψ, .mfunc `χ #[])])
