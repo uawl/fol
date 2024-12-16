@@ -111,7 +111,7 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
   s.goals.forRevM (fun goal => do
     println! "{goal}"
   )
-  println! "{id}>"
+  IO.print "{id}> "
   let stdin ← IO.getStdin
   let line ← stdin.getLine
   let s ← (do
@@ -143,7 +143,7 @@ def main : IO Unit := do
   let mut env := { : Env}
   let stdin ← IO.getStdin
   repeat do
-    println! "FOL> "
+    IO.print "FOL> "
     let line ← stdin.getLine
     match parseCommand.run line with
     | .ok _ (.addFunc n d) =>
