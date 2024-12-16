@@ -111,7 +111,7 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
   s.goals.forRevM (fun goal => do
     println! "{goal}"
   )
-  IO.print "{id}> "
+  IO.print s!"{id}> "
   let stdin ← IO.getStdin
   let line ← stdin.getLine
   let s ← (do
