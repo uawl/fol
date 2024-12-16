@@ -108,10 +108,11 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
   if s.goals.size = 0 then
     println! "proof complete: {id}"
     return
+  IO.print s!"\x1B[2J\x1B[H"
   s.goals.forRevM (fun goal => do
     println! "{goal}"
   )
-  IO.print s!"\x1b2J{id}> "
+  IO.print s!"{id}> "
   let stdin ← IO.getStdin
   let line ← stdin.getLine
   let s ← (do
