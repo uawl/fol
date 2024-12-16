@@ -108,7 +108,6 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
   if s.goals.size = 0 then
     println! "proof complete: {id}"
     return
-  IO.print s!"\x1B[2J\x1B[H"
   s.goals.forRevM (fun goal => do
     println! "{goal}"
   )
@@ -137,6 +136,7 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
       IO.eprintln s!"parse error: {e}"
       return s
   )
+  IO.print s!"\x1B[2J\x1B[H"
   proveLoop env id s
 
 
@@ -164,6 +164,7 @@ def main : IO Unit := do
         IO.eprintln e
         continue
       let st : ProofState := { goals := #[{ context := { mfuncs := d.mfuncs, premises := #[] }, goal := d.type }] }
+      IO.print s!"\x1B[2J\x1B[H"
       proveLoop env n st
       match env.tryAddRule n d with
       | .ok env' => env := env'
