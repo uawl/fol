@@ -33,8 +33,8 @@ def nat : Parser Nat := do
 
 partial def term (depth := 0) (aux : HashMap String Nat := {}) : Parser Term := do
   match ← peek with
-  | '%' =>
-    let _ ← char '%'
+  | '@' =>
+    let _ ← char '@'
     let id ← ident
     let args ← option? <| char '(' *> ws *> sepBy (char ',' <* ws) (term depth aux <* ws) <* ws <* char ')'
     let args := args.getD #[]

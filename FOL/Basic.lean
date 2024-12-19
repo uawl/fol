@@ -14,7 +14,7 @@ inductive Term where
 deriving Inhabited
 
 partial def Term.toString : Term → String
-  | .mfunc n a => s!"%{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
+  | .mfunc n a => s!"@{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
   | .bvar i => s!"#{i}"
   | .func n a => s!"{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
   | .binder n b => s!"\\{n}, {b.toString}"
@@ -67,7 +67,9 @@ partial def Term.instMany : Term → Array Term → (k :_:= 0) → Term
 
 partial def Term.instFree : Term → HashMap Name Term → (k :_:= 0) → Term
   | .mfunc n a, es, k =>
-    if let some e := es[n]? then liftN k (e.instMany a) else mfunc n a
+    if let some e := es[n]? then
+      liftN k (e.instMany (a.map (·.instFree es k)))
+    else mfunc n (a.map (·.instFree es k))
   | .bvar i, _, _ => .bvar i
   | .func n args, es, k =>
     .func n (args.map (·.instFree es k))
@@ -112,13 +114,13 @@ def RuleType.instFree : RuleType → RuleType
 structure RuleData where
   mfuncs : HashMap Name FuncData
   type : RuleType
-deriving Repr
+deriving Repr, Inhabited
 
 structure Env where
   funcs : HashMap Name FuncData := {}
   binders : HashMap Name BinderData := {}
   rules : HashMap Name RuleData := {}
-deriving Repr
+deriving Repr, Inhabited
 
 structure Context where
   mfuncs : HashMap Name FuncData
@@ -170,17 +172,17 @@ where
 
 def Env.tryAddFunc (e : Env) (name : Name) (data : FuncData) : Except String Env := do
   if e.funcs.contains name then
-    throw "function '{name}' is already defined"
+    throw s!"function '{name}' is already defined"
   return { e with funcs := e.funcs.insert name data }
 
 def Env.tryAddBinder (e : Env) (name : Name) (data : BinderData) : Except String Env := do
   if e.binders.contains name then
-    throw "binder '{name}' is already defined"
+    throw s!"binder '{name}' is already defined"
   return { e with binders := e.binders.insert name data }
 
 def Env.tryAddRule (e : Env) (name : Name) (data : RuleData) : Except String Env := do
   if e.rules.contains name then
-    throw "rule '{name}' is already defined"
+    throw s!"rule '{name}' is already defined"
   sortCheck data.type
   return { e with rules := e.rules.insert name data }
 where
@@ -266,3 +268,52 @@ where
 
 structure ProofState where
   goals : Array ProofGoal
+
+def ProofState.toString (ps : ProofState) : String :=
+  ps.goals.foldr (fun l r => s!"{r}\n{l}") ""
+
+instance : ToString ProofState := ⟨ProofState.toString⟩
+
+def ProofState.isDone (ps : ProofState) : Bool := ps.goals.isEmpty
+
+def ProofState.head (ps : ProofState) : Except String ProofGoal := do
+  let some goal := ps.goals[0]?
+    | throw "no goals to prove"
+  return goal
+
+def ProofState.closeHead (ps : ProofState) : Except String ProofState := do
+  if h : 0 < ps.goals.size then
+    return { ps with goals := ps.goals.eraseIdx 0 }
+  else
+    throw "no goals to prove"
+
+def ProofState.replaceHead (ps : ProofState) (to : Array ProofGoal) : Except String ProofState := do
+  if h : 0 < ps.goals.size then
+    return { ps with goals := to ++ ps.goals.eraseIdx 0 }
+  else
+    throw "no goals to prove"
+
+def ProofState.introduce (ps : ProofState) : Except String ProofState := do
+  let goal ← ps.head
+  ps.replaceHead #[goal.introduce]
+
+def ProofState.closeTrivial (ps : ProofState) : Except String ProofState := do
+  let goal ← ps.head
+  if goal.isTrivial then
+    ps.closeHead
+  else
+    throw "goal is not in the premises"
+
+def ProofState.applyPremise (ps : ProofState) (idx : Nat) : Except String ProofState := do
+  let goal ← ps.head
+  let newGoals ← goal.applyPremise idx
+  ps.replaceHead newGoals
+
+def ProofState.applyRule (ps : ProofState) (env : Env) (name : Name) (mfuncMap : HashMap Name Term) : Except String ProofState := do
+  let goal ← ps.head
+  let newGoals ← goal.applyRule env name mfuncMap
+  ps.replaceHead newGoals
+
+def ProofState.focus (ps : ProofState) : Except String ProofState := do
+  let goal ← ps.head
+  return { ps with goals := #[goal] }

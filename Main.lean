@@ -104,16 +104,16 @@ end Frontend
 
 open Frontend
 
-partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
+partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Bool := do
   if s.goals.size = 0 then
-    println! "proof complete: {id}"
-    return
+    return true
   s.goals.forRevM (fun goal => do
     println! "{goal}"
   )
   IO.print s!"{id}> "
   let stdin ← IO.getStdin
   let line ← stdin.getLine
+  IO.print s!"\x1B[2J\x1B[H"
   let s ← (do
     match parseTactic.run line with
     | .ok _ .introduce =>
@@ -124,19 +124,18 @@ partial def proveLoop (env : Env) (id : Name) (s : ProofState) : IO Unit := do
       match s.goals[0]!.applyRule env n m with
       | .ok newGoals => return { s with goals := newGoals ++ s.goals.eraseIdx! 0 }
       | .error e =>
-        IO.eprintln e
+        IO.println e
         return s
     | .ok _ (.applyPremise i) =>
       match s.goals[0]!.applyPremise i with
       | .ok newGoals => return { s with goals := newGoals ++ s.goals.eraseIdx! 0 }
       | .error e =>
-        IO.eprintln e
+        IO.println e
         return s
     | .error _ e =>
-      IO.eprintln s!"parse error: {e}"
+      IO.println s!"parse error: {e}"
       return s
   )
-  IO.print s!"\x1B[2J\x1B[H"
   proveLoop env id s
 
 
@@ -150,24 +149,29 @@ def main : IO Unit := do
     | .ok _ (.addFunc n d) =>
       match env.tryAddFunc n d with
       | .ok env' => env := env'
-      | .error e => IO.eprintln e
+      | .error e => IO.println e
     | .ok _ (.addBinder n d) =>
       match env.tryAddBinder n d with
       | .ok env' => env := env'
-      | .error e => IO.eprintln e
+      | .error e => IO.println e
     | .ok _ (.addRule n d) =>
       match env.tryAddRule n d with
       | .ok env' => env := env'
-      | .error e => IO.eprintln e
+      | .error e => IO.println e
     | .ok _ (.prove n d) =>
       if let .error e := env.tryAddRule n d then
-        IO.eprintln e
+        IO.println e
         continue
       let st : ProofState := { goals := #[{ context := { mfuncs := d.mfuncs, premises := #[] }, goal := d.type }] }
-      IO.print s!"\x1B[2J\x1B[H"
-      proveLoop env n st
-      match env.tryAddRule n d with
-      | .ok env' => env := env'
-      | .error _ => unreachable!
-    | .ok _ _ => IO.eprintln "not implemented"
-    | .error _ e => IO.eprintln s!"parse error: {e}"
+      IO.print s!"\x1B[?1049h\x1b[2J\x1b[H"
+      let success ← proveLoop env n st
+      IO.print s!"\x1B[?1049l"
+      if success then
+        println! "proof complete: {n}"
+        match env.tryAddRule n d with
+        | .ok env' => env := env'
+        | .error _ => unreachable!
+      else
+        IO.println "proof terminated"
+    | .ok _ _ => IO.println "not implemented"
+    | .error _ e => IO.println s!"parse error: {e}"
