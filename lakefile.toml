@@ -1,13 +1,9 @@
 name = "fol"
 version = "0.1.0"
-defaultTargets = ["fol"]
+defaultTargets = ["FOL"]
 
 [[lean_lib]]
 name = "FOL"
-
-[[lean_exe]]
-name = "fol"
-root = "Main"
 
 [[require]]
 name = "Parser"

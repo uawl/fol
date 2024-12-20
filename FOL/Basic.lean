@@ -7,14 +7,14 @@ open Std
 export Lean (Name)
 
 inductive Term where
-  | mfunc (name : Name) (args : Array Term)
+  | mfunc (idx : Nat) (args : Array Term)
   | bvar (idx : Nat)
   | func (name : Name) (args : Array Term)
   | binder (name : Name) (body : Term)
 deriving Inhabited
 
 partial def Term.toString : Term → String
-  | .mfunc n a => s!"@{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
+  | .mfunc n a => s!"?{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
   | .bvar i => s!"#{i}"
   | .func n a => s!"{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
   | .binder n b => s!"\\{n}, {b.toString}"
@@ -54,6 +54,7 @@ partial def Term.inst : Term → Term → (k :_:=0) → Term
   | .binder n b, e, k =>
     .binder n (b.inst e (k+1))
 
+
 partial def Term.instMany : Term → Array Term → (k :_:= 0) → Term
   | .mfunc n a, _, _ => mfunc n a
   | .bvar i, es, k =>
@@ -65,21 +66,24 @@ partial def Term.instMany : Term → Array Term → (k :_:= 0) → Term
   | .binder n b, e, k =>
     .binder n (b.instMany e (k+1))
 
-partial def Term.instFree : Term → HashMap Name Term → (k :_:= 0) → Term
-  | .mfunc n a, es, k =>
-    if let some e := es[n]? then
-      liftN k (e.instMany (a.map (·.instFree es k)))
-    else mfunc n (a.map (·.instFree es k))
-  | .bvar i, _, _ => .bvar i
-  | .func n args, es, k =>
-    .func n (args.map (·.instFree es k))
-  | .binder n b, es, k =>
-    .binder n (b.instFree es (k+1))
+
+partial def Term.instM : Term → Array Term → Nat → (k :_:= 0) → Term
+  | .mfunc n a, es, md, k =>
+    if n < md - es.size then
+      .mfunc n (a.map (·.instM es md k))
+    else if let some e := es[md-(n+1)]? then
+      e.instMany (a.map (·.instM es md k))
+    else mfunc n (a.map (·.instM es md k))
+  | .bvar i, _, _, _ => .bvar i
+  | .func n args, es, md, k =>
+    .func n (args.map (·.instM es md k))
+  | .binder n b, es, md, k =>
+    .binder n (b.instM es md (k+1))
 
 structure FuncData where
   argSorts : Array Name
   resSort : Name
-deriving Repr
+deriving Inhabited, Repr, BEq
 
 def FuncData.toString : FuncData → String
   | { argSorts, resSort } => argSorts.foldl (· ++ ·.toString ++ " → ") "" ++ resSort.toString
@@ -92,41 +96,61 @@ structure BinderData where
   resSort : Name
 deriving Repr
 
+structure MFuncData extends FuncData where
+  name : Name
+deriving Inhabited, Repr, BEq
+
+structure RContext where
+  mfuncs : Array MFuncData := #[]
+deriving Inhabited, BEq
+
+
+instance : ToString RContext where
+  toString c :=
+    let str := c.mfuncs
+      |>.map (fun { name, toFuncData } => s!"{name} : {toFuncData}")
+      |>.toList
+      |> (String.intercalate "; ")
+    s!"[{str}]"
+
 inductive RuleType where
-  | leaf (conclusion : Term)
-  | node (premises conclusion : RuleType)
-deriving BEq, Inhabited
+  | leaf (ctx : RContext) (conclusion : Term)
+  | node (ctx : RContext) (premises conclusion : RuleType)
+deriving Inhabited
+
+def RuleType.beq : RuleType → RuleType → Bool
+  | .leaf c₁ cl₁, .leaf c₂ cl₂ =>
+    cl₁ == cl₂ && c₁ == c₂
+  | .node ctx₁ p₁ c₁, .node ctx₂ p₂ c₂ => ctx₁ == ctx₂ && p₁.beq p₂ && c₁.beq c₂
+  | _, _ => false
+
+instance : BEq RuleType := ⟨RuleType.beq⟩
 
 def RuleType.toString : RuleType → String
-  | .leaf c => s!"{c}"
-  | .node p c => s!"({p.toString} ⊢ {c.toString})"
+  | .leaf ctx c =>
+    s!"({ctx} ⊢ {c})"
+  | .node c₁ p c => s!"({c₁} {p.toString} ⊢ {c.toString})"
 
 instance : ToString RuleType := ⟨RuleType.toString⟩
 
 instance : Repr RuleType where
   reprPrec t _ := t.toString
 
-variable (fvarMap : HashMap Name Term) in
-def RuleType.instFree : RuleType → RuleType
-  | .leaf conclusion => .leaf (conclusion.instFree fvarMap)
-  | .node premise conclusion => .node premise.instFree conclusion.instFree
-
-structure RuleData where
-  mfuncs : HashMap Name FuncData
-  type : RuleType
-deriving Repr, Inhabited
+variable (fvarMap : Array Term) in
+def RuleType.instM : RuleType → (k :_:= 0) → RuleType
+  | .leaf ctx conclusion, k => .leaf ctx (conclusion.instM fvarMap (k + ctx.mfuncs.size))
+  | .node c premise conclusion, k =>
+    let k := k + c.mfuncs.size
+    .node c (premise.instM k) (conclusion.instM k)
 
 structure Env where
   funcs : HashMap Name FuncData := {}
   binders : HashMap Name BinderData := {}
-  rules : HashMap Name RuleData := {}
+  rules : HashMap Name RuleType := {}
 deriving Repr, Inhabited
 
-structure Context where
-  mfuncs : HashMap Name FuncData
-deriving Repr, Inhabited
 
-structure InferContext extends Context where
+structure InferContext extends RContext where
   bvarSorts : Array Name
 
 partial def inferSort (env : Env) (ctx : InferContext) (t : Term) : Except String Name := do
@@ -135,9 +159,9 @@ where
   go t ctx := do
     match t with
     | .mfunc n as =>
-      if let some { argSorts, resSort } := ctx.mfuncs[n]? then
+      if let some { argSorts, resSort, name } := ctx.mfuncs[ctx.mfuncs.size - (n+1)]? then
         if as.size ≠ argSorts.size then
-          throw s!"meta function '{n}' takes {argSorts.size} argument(s) but {as.size} provided"
+          throw s!"meta function '{name}' of {repr ctx.mfuncs} takes {argSorts.size} argument(s) but {as.size} provided"
         for i in [0:argSorts.size] do
           let argSort ← go as[i]! ctx
           if argSort ≠ argSorts[i]! then
@@ -180,17 +204,17 @@ def Env.tryAddBinder (e : Env) (name : Name) (data : BinderData) : Except String
     throw s!"binder '{name}' is already defined"
   return { e with binders := e.binders.insert name data }
 
-def Env.tryAddRule (e : Env) (name : Name) (data : RuleData) : Except String Env := do
+def Env.tryAddRule (e : Env) (name : Name) (type : RuleType) : Except String Env := do
   if e.rules.contains name then
     throw s!"rule '{name}' is already defined"
-  sortCheck data.type
-  return { e with rules := e.rules.insert name data }
+  sortCheck { mfuncs := {} } type
+  return { e with rules := e.rules.insert name type }
 where
-  sortCheck
-  | .node p c => sortCheck p *> sortCheck c
-  | .leaf c => discard <| inferSort e { mfuncs := data.mfuncs, bvarSorts := #[] } c
+  sortCheck (aux : RContext)
+  | .node ctx p c => sortCheck { mfuncs := aux.mfuncs ++ ctx.mfuncs } p *> sortCheck { mfuncs := aux.mfuncs ++ ctx.mfuncs } c
+  | .leaf ctx c => discard <| inferSort e { mfuncs := aux.mfuncs ++ ctx.mfuncs, bvarSorts := #[] } c
 
-structure ProofContext extends Context where
+structure ProofContext extends RContext where
   premises : Array RuleType
 deriving Inhabited
 
@@ -199,7 +223,7 @@ def ProofContext.toString : ProofContext → String
     "\n-- Premises --\n" ++
     ((premises.mapIdx (s!"{·}: {·}")).foldl (s!"{·}{·}\n") "") ++
     "-- Meta Functions --" ++
-    mfuncs.fold (fun l n t => s!"{l}\n{n} : {t}") ""
+    mfuncs.foldl (fun l {name, toFuncData} => s!"{l}\n{name} : {toFuncData}") ""
 
 instance : ToString ProofContext := ⟨ProofContext.toString⟩
 
@@ -219,58 +243,43 @@ instance : ToString ProofGoal := ⟨ProofGoal.toString⟩
 def ProofGoal.isTrivial (goal : ProofGoal) : Bool :=
   goal.context.premises.any (· == goal.goal)
 
-def ProofGoal.applyRule (goal : ProofGoal) (env : Env) (ruleName : Name) (mfuncMap : HashMap Name Term) : Except String (Array ProofGoal) := do
-  if let some { mfuncs, type } := env.rules[ruleName]? then
-    for (id, { argSorts, resSort }) in mfuncs do
-      let some e := mfuncMap[id]?
-        | throw s!"variable {id} of rule {ruleName} is not provided"
-      let resSort' ← inferSort env { goal.context.toContext with bvarSorts := argSorts } e
-      unless resSort = resSort' do
-        throw s!"sort mismatch {resSort'} ≠ {resSort}"
-    let type := type.instFree mfuncMap
-    let premises ← findPremises type goal.goal #[]
-    return premises.map ({ context := goal.context, goal := · })
+def ProofGoal.haveRule (goal : ProofGoal) (env : Env) (ruleName : Name) : Except String ProofGoal := do
+  if let some type := env.rules[ruleName]? then
+    return { goal with context.premises := goal.context.premises.push type }
   else throw s!"unknown rule '{ruleName}'"
-where
-  findPremises : RuleType → RuleType → Array RuleType → Except String (Array RuleType)
-  | .leaf t, .leaf t', aux => if t == t' then return aux else throw s!"failed to apply rule: {t} =?= {t'}"
-  | src@(.node p c), tgt, aux =>
-    if src == tgt then
-      return aux
-    else
-      findPremises c tgt (aux.push p)
-  | src, tgt, _ => throw s!"failed to apply rule: {src} =?= {tgt}"
-
-def ProofGoal.applyPremise (goal : ProofGoal) (idx : Nat) : Except String (Array ProofGoal) := do
-  if let some type := goal.context.premises[idx]? then
-    let premises ← findPremises type goal.goal #[]
-    return premises.map ({ context := goal.context, goal := · })
-  else throw s!"premises index {idx} out of bound"
-where
-  findPremises : RuleType → RuleType → Array RuleType → Except String (Array RuleType)
-  | .leaf t, .leaf t', aux => if t == t' then return aux else throw s!"failed to apply rule: {t} =?= {t'}"
-  | src@(.node p c), tgt, aux =>
-    if src == tgt then
-      return aux
-    else
-      findPremises c tgt (aux.push p)
-  | src, tgt, _ => throw s!"failed to apply premise: {src} =?= {tgt}"
-
 
 def ProofGoal.introduce (goal : ProofGoal) : ProofGoal :=
-  let (prems, newGoal) := collect goal.goal #[]
-  { goal with context.premises := goal.context.premises ++ prems, goal := newGoal }
+  let (mfuncs, prems, newGoal) := collect goal.goal goal.context.premises goal.context.mfuncs
+  { goal with
+    context.mfuncs := mfuncs
+    context.premises := prems
+    goal := newGoal }
 where
-  collect : RuleType → Array RuleType → Array RuleType × RuleType
-    | .node p c, aux => collect c (aux.push p)
-    | .leaf c, aux => (aux, .leaf c)
+  collect : RuleType → Array RuleType → Array MFuncData → Array MFuncData × Array RuleType × RuleType
+    | .node {mfuncs} p c, aux, auxm => collect c (aux.push p) (auxm ++ mfuncs)
+    | .leaf {mfuncs} c, aux, auxm => (auxm ++ mfuncs, aux, .leaf {} c)
 
+def ProofGoal.specialize (goal : ProofGoal) (idx : Nat) (mfuncs : Array Term) : Except String (Array ProofGoal) := do
+  if let some prem := goal.context.premises[idx]? then
+    match prem with
+    | .leaf ctx t =>
+      unless ctx.mfuncs.size = mfuncs.size do
+        throw "meta function size mismatch"
+      return #[
+        { goal with context.premises := goal.context.premises.push (.leaf {} (t.instM mfuncs mfuncs.size))}]
+    | .node ctx p c =>
+      unless ctx.mfuncs.size = mfuncs.size do
+        throw "meta function size mismatch"
+      return #[
+        { goal with context.mfuncs := goal.context.mfuncs ++ ctx.mfuncs, goal := (p.instM mfuncs mfuncs.size) },
+        { goal with context.premises := goal.context.premises.push (c.instM mfuncs mfuncs.size)}]
+  else throw s!"premise #{idx} doesn't exists"
 
 structure ProofState where
   goals : Array ProofGoal
 
 def ProofState.toString (ps : ProofState) : String :=
-  ps.goals.foldr (fun l r => s!"{r}\n{l}") ""
+  ps.goals.foldl (fun l r => s!"{l}\n{r}") ""
 
 instance : ToString ProofState := ⟨ProofState.toString⟩
 
@@ -304,16 +313,15 @@ def ProofState.closeTrivial (ps : ProofState) : Except String ProofState := do
   else
     throw "goal is not in the premises"
 
-def ProofState.applyPremise (ps : ProofState) (idx : Nat) : Except String ProofState := do
+def ProofState.haveRule (ps : ProofState) (env : Env) (name : Name) : Except String ProofState := do
   let goal ← ps.head
-  let newGoals ← goal.applyPremise idx
-  ps.replaceHead newGoals
-
-def ProofState.applyRule (ps : ProofState) (env : Env) (name : Name) (mfuncMap : HashMap Name Term) : Except String ProofState := do
-  let goal ← ps.head
-  let newGoals ← goal.applyRule env name mfuncMap
-  ps.replaceHead newGoals
+  let newGoal ← goal.haveRule env name
+  ps.replaceHead #[newGoal]
 
 def ProofState.focus (ps : ProofState) : Except String ProofState := do
   let goal ← ps.head
   return { ps with goals := #[goal] }
+
+def ProofState.specialize (ps : ProofState) (idx : Nat) (mfuncs : Array Term) : Except String ProofState := do
+  let goal ← ps.head
+  ps.replaceHead (← goal.specialize idx mfuncs)
