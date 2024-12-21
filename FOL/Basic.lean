@@ -7,27 +7,27 @@ open Std
 export Lean (Name)
 
 inductive Term where
-  | mfunc (idx : Nat) (args : Array Term)
+  | mfunc (varName : Name) (idx : Nat) (args : Array Term)
   | bvar (idx : Nat)
   | func (name : Name) (args : Array Term)
-  | binder (name : Name) (body : Term)
+  | binder (name : Name) (varName : Name) (body : Term)
 deriving Inhabited
 
-partial def Term.toString : Term → String
-  | .mfunc n a => s!"?{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
-  | .bvar i => s!"#{i}"
-  | .func n a => s!"{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toString)).toList})"
-  | .binder n b => s!"\\{n}, {b.toString}"
+partial def Term.toStringCore (aux : Array Name) : Term → String
+  | .mfunc v _ a => s!"{v}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toStringCore aux)).toList})"
+  | .bvar i => if let some n := aux[aux.size - (i + 1)]? then n.toString else s!"#{i}"
+  | .func n a => s!"{n}" ++ if a.isEmpty then "" else s!"({String.intercalate ", " (a.map (·.toStringCore aux)).toList})"
+  | .binder n v b => s!"\\{n} {v}, {b.toStringCore (aux.push v)}"
 
-instance : ToString Term := ⟨Term.toString⟩
+instance : ToString Term := ⟨Term.toStringCore #[]⟩
 instance : Repr Term where
   reprPrec t _ := toString t
 
 partial def Term.beq : Term → Term → Bool
-  | .mfunc n₁ a₁, mfunc n₂ a₂ => n₁ == n₂ && (a₁.zipWith a₂ (·.beq ·)).all id
+  | .mfunc _ n₁ a₁, mfunc _ n₂ a₂ => n₁ == n₂ && (a₁.zipWith a₂ (·.beq ·)).all id
   | .bvar i, .bvar j => i == j
   | .func n₁ a₁, .func n₂ a₂ => n₁ == n₂ && (a₁.zipWith a₂ (·.beq ·)).all id
-  | .binder n₁ b₁, .binder n₂ b₂ => n₁ == n₂ && b₁.beq b₂
+  | .binder n₁ _ b₁, .binder n₂ _ b₂ => n₁ == n₂ && b₁.beq b₂
   | _, _ => false
 
 instance : BEq Term := ⟨Term.beq⟩
@@ -36,49 +36,49 @@ def Term.liftVar (n i : Nat) (k := 0) : Nat := if n < k then i else n + i
 
 variable (n : Nat) in
 partial def Term.liftN : Term → (k :_:= 0) → Term
-  | .mfunc n a, _ => mfunc n a
+  | .mfunc v n a, _ => mfunc v n a
   | .bvar i, k => .bvar (liftVar n i k)
   | .func n args, k => .func n (args.map (·.liftN k))
-  | .binder n b, k => .binder n (b.liftN (k+1))
+  | .binder n v b, k => .binder n v (b.liftN (k+1))
 
 abbrev Term.lift := liftN 1
 
 partial def Term.inst : Term → Term → (k :_:=0) → Term
-  | .mfunc n a, _, _ => mfunc n a
+  | .mfunc v n a, _, _ => mfunc v n a
   | .bvar i, e, k =>
     if i < k then .bvar i
     else if i = k then liftN k e
     else .bvar (i-1)
   | .func n args, e, k =>
     .func n (args.map (·.inst e k))
-  | .binder n b, e, k =>
-    .binder n (b.inst e (k+1))
+  | .binder n v b, e, k =>
+    .binder n v (b.inst e (k+1))
 
 
 partial def Term.instMany : Term → Array Term → (k :_:= 0) → Term
-  | .mfunc n a, _, _ => mfunc n a
+  | .mfunc v n a, _, _ => mfunc v n a
   | .bvar i, es, k =>
     if i < k then .bvar i
     else if i - k < es.size then liftN k es[es.size - (i - k + 1)]!
     else .bvar (i-es.size)
   | .func n args, e, k =>
     .func n (args.map (·.instMany e k))
-  | .binder n b, e, k =>
-    .binder n (b.instMany e (k+1))
+  | .binder n v b, e, k =>
+    .binder n v (b.instMany e (k+1))
 
 
 partial def Term.instM : Term → Array Term → Nat → (k :_:= 0) → Term
-  | .mfunc n a, es, md, k =>
+  | .mfunc v n a, es, md, k =>
     if n < md - es.size then
-      .mfunc n (a.map (·.instM es md k))
+      .mfunc v n (a.map (·.instM es md k))
     else if let some e := es[md-(n+1)]? then
       e.instMany (a.map (·.instM es md k))
-    else mfunc n (a.map (·.instM es md k))
+    else mfunc v n (a.map (·.instM es md k))
   | .bvar i, _, _, _ => .bvar i
   | .func n args, es, md, k =>
     .func n (args.map (·.instM es md k))
-  | .binder n b, es, md, k =>
-    .binder n (b.instM es md (k+1))
+  | .binder n v b, es, md, k =>
+    .binder n v (b.instM es md (k+1))
 
 structure FuncData where
   argSorts : Array Name
@@ -158,7 +158,7 @@ partial def inferSort (env : Env) (ctx : InferContext) (t : Term) : Except Strin
 where
   go t ctx := do
     match t with
-    | .mfunc n as =>
+    | .mfunc _ n as =>
       if let some { argSorts, resSort, name } := ctx.mfuncs[ctx.mfuncs.size - (n+1)]? then
         if as.size ≠ argSorts.size then
           throw s!"meta function '{name}' of {repr ctx.mfuncs} takes {argSorts.size} argument(s) but {as.size} provided"
@@ -185,7 +185,7 @@ where
         return resSort
       else
         throw s!"unknown function '{n}'"
-    | .binder n b =>
+    | .binder n _ b =>
       if let some { varSort, bodySort, resSort } := env.binders[n]? then
         let sort ← go b {ctx with bvarSorts := ctx.bvarSorts.push varSort }
         if sort ≠ bodySort then

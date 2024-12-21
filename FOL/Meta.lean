@@ -58,28 +58,26 @@ declare_syntax_cat fol_term
 
 syntax fol_args := "(" fol_term,* ")"
 
-syntax "?" ident (fol_args)? : fol_term
 syntax ident (fol_args)? : fol_term
 syntax "\\" noWs ident ident ", " fol_term : fol_term
 
 @[specialize]
 partial def parseTermCore (e : TSyntax `fol_term) (depth : Nat) (aux : HashMap Name Nat) (auxm : HashMap Name Nat) (mdepth : Nat) : CommandElabM Term := do
   match e with
-  | `(fol_term| ? $id $[($args,*)]?) =>
-    let args := args.map (·.getElems) |>.getD #[]
-    if let some idx := auxm[id.getId]? then
-      return Term.mfunc (mdepth - (idx+1)) (← args.mapM (parseTermCore · depth aux auxm mdepth))
-    else
-      throwErrorAt e "unknown meta function"
   | `(fol_term| $id:ident $[($args,*)]?) =>
     if let some args := args then
-      return Term.func id.getId (← args.getElems.mapM (parseTermCore · depth aux auxm mdepth))
+      if let some idx := auxm[id.getId]? then
+        return Term.mfunc id.getId (mdepth - (idx+1)) (← args.getElems.mapM (parseTermCore · depth aux auxm mdepth))
+      else
+        return Term.func id.getId (← args.getElems.mapM (parseTermCore · depth aux auxm mdepth))
     else if let some idx := aux[id.getId]? then
       return Term.bvar (depth - (idx+1))
+    else if let some idx := auxm[id.getId]? then
+        return Term.mfunc id.getId (mdepth - (idx+1)) #[]
     else
       return Term.func id.getId #[]
   | `(fol_term| \$n:ident $v:ident, $b) =>
-    return Term.binder n.getId (← parseTermCore b (depth+1) (aux.insert v.getId depth) auxm mdepth)
+    return Term.binder n.getId v.getId (← parseTermCore b (depth+1) (aux.insert v.getId depth) auxm mdepth)
   | _ => throwUnsupportedSyntax
 
 @[inline] def parseTerm (e : TSyntax `fol_term) (auxm : HashMap Name Nat) (mdepth : Nat) : CommandElabM Term := do
