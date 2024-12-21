@@ -1,1 +1,1 @@
-# FOL, a many-sorted first-order logic proof assistant
+# FOL, a many-sorted logic proof assistant
