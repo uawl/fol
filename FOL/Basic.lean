@@ -271,9 +271,42 @@ def ProofGoal.specialize (goal : ProofGoal) (idx : Nat) (mfuncs : Array Term) : 
       unless ctx.mfuncs.size = mfuncs.size do
         throw "meta function size mismatch"
       return #[
-        { goal with context.mfuncs := goal.context.mfuncs ++ ctx.mfuncs, goal := (p.instM mfuncs mfuncs.size) },
+        { goal with goal := (p.instM mfuncs mfuncs.size) },
         { goal with context.premises := goal.context.premises.push (c.instM mfuncs mfuncs.size)}]
   else throw s!"premise #{idx} doesn't exists"
+
+partial def ProofGoal.applyRule (goal : ProofGoal) (env : Env) (name : Name) (mfuncs : Array Term) : Except String (Array ProofGoal) := do
+  if let some rule := env.rules[name]? then
+    let newGoals ← collect #[] mfuncs rule goal.goal
+    return newGoals.map ({ goal with goal := · })
+  else
+    throw s!"unknown rule {name}"
+where
+  collect (aux : Array RuleType) (mfuncs : Array Term) : RuleType → RuleType → Except String (Array RuleType)
+    | .leaf ctx t, .leaf ctx' t' => do
+      unless ctx'.mfuncs.isEmpty do
+        throw "goal has meta functions"
+      unless ctx.mfuncs.size = mfuncs.size do
+        throw "meta function size mismatch"
+      let t := t.instM mfuncs mfuncs.size
+      unless t == t' do
+        throw s!"failed to apply goal: {t} =?= {goal.goal}"
+      return aux
+    | .node ctx p c, g => do
+      unless ctx.mfuncs.size <= mfuncs.size do
+        throw "meta function size mismatch"
+      let mfuncCur := mfuncs.extract 0 ctx.mfuncs.size
+      let p := p.instM mfuncCur mfuncCur.size
+      let c := c.instM mfuncCur mfuncCur.size
+      let aux := aux.push p
+      collect aux (mfuncs.toSubarray.drop ctx.mfuncs.size |>.toArray) c g
+    | _, .node _ _ _ =>
+      throw "introduce goal first"
+
+
+
+
+
 
 structure ProofState where
   goals : Array ProofGoal
@@ -325,3 +358,7 @@ def ProofState.focus (ps : ProofState) : Except String ProofState := do
 def ProofState.specialize (ps : ProofState) (idx : Nat) (mfuncs : Array Term) : Except String ProofState := do
   let goal ← ps.head
   ps.replaceHead (← goal.specialize idx mfuncs)
+
+def ProofState.applyRule (ps : ProofState) (env : Env) (name : Name) (mfuncs : Array Term) : Except String ProofState := do
+  let goal ← ps.head
+  ps.replaceHead (← goal.applyRule env name mfuncs)

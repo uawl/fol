@@ -1,20 +1,29 @@
 import FOL.Meta
 
-fol_func eq(set, set) : wff
+fol_func true : wff
+fol_func false : wff
+fol_func imp(wff, wff) : wff
+fol_func not(wff) : wff
 
-fol_binder \all set, wff : wff
+fol_rule true.intro true
 
-fol_rule ax_eq [x:set] ⊢ eq(?x, ?x)
+fol_rule false.elim [φ:wff] false ⊢ ?φ
 
-fol_rule all_intro [φ:set→wff] ([y:set] ⊢ ?φ(?y)) ⊢ (⊢ \all x, ?φ(x))
+fol_rule imp.intro [φ:wff, ψ:wff] (?φ ⊢ ?ψ) ⊢ imp(?φ, ?ψ)
+fol_rule imp.elim [φ:wff, ψ:wff] imp(?φ, ?ψ) ⊢ ?φ ⊢ ?ψ
 
-fol_rule all_elim [φ:set→wff, y:set] (⊢ \all x, ?φ(x)) ⊢ (⊢ ?φ(?y))
+fol_rule not.intro [φ:wff] imp(?φ, false) ⊢ not(?φ)
+fol_rule not.elim [φ:wff] not(?φ) ⊢ ?φ ⊢ false
 
-fol_prove all_eq ⊢ \all x, eq(x, x) =>
-  have all_intro
-  specialize 0 [x => eq(x, x)]
-  · have ax_eq
-    intro
-    specialize 1 [?y]
-    triv
+fol_prove mt [φ:wff, ψ:wff] imp(?ψ, ?φ) ⊢ imp(not(?φ), not(?ψ)) =>
+  intro
+  apply imp.intro [not(?φ), not(?ψ)]
+  intro
+  apply not.intro [?ψ]
+  apply imp.intro [?ψ, false]
+  intro
+  apply not.elim [?φ]
   · triv
+  · apply imp.elim [?ψ, ?φ]
+    · triv
+    · triv

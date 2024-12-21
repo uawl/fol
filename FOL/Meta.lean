@@ -77,7 +77,7 @@ partial def parseTermCore (e : TSyntax `fol_term) (depth : Nat) (aux : HashMap N
     else if let some idx := aux[id.getId]? then
       return Term.bvar (depth - (idx+1))
     else
-      throwErrorAt e "unknown variable"
+      return Term.func id.getId #[]
   | `(fol_term| \$n:ident $v:ident, $b) =>
     return Term.binder n.getId (← parseTermCore b (depth+1) (aux.insert v.getId depth) auxm mdepth)
   | _ => throwUnsupportedSyntax
@@ -88,24 +88,30 @@ partial def parseTermCore (e : TSyntax `fol_term) (depth : Nat) (aux : HashMap N
 
 declare_syntax_cat fol_ruleType
 
-syntax:max ((mfuncData)? " ⊢ ")? fol_term : fol_ruleType
-syntax:50 (mfuncData)? fol_ruleType:51 " ⊢ " fol_ruleType:50 : fol_ruleType
+syntax fol_term : fol_ruleType
+syntax mfuncData " ⊢ " fol_term : fol_ruleType
+syntax:50 fol_ruleType:51 " ⊢ " fol_ruleType:50 : fol_ruleType
+syntax:50 mfuncData fol_ruleType:51 " ⊢ " fol_ruleType:50 : fol_ruleType
 syntax "(" fol_ruleType ")" : fol_ruleType
 
 @[specialize]
 partial def parseRuleTypeCore (e : TSyntax `fol_ruleType) (depth : Nat) (auxm : HashMap Name Nat) : CommandElabM RuleType := do
   match e with
-  | `(fol_ruleType| $[$d:mfuncData]? $p ⊢ $c) =>
-    let d ← (·.getD #[]) <$> d.mapM parseFuncDatas
+  | `(fol_ruleType| $p ⊢ $c) =>
+    return RuleType.node {}  (← parseRuleTypeCore p depth auxm) (← parseRuleTypeCore c depth auxm)
+  | `(fol_ruleType| $d:mfuncData $p ⊢ $c) =>
+    let d ← parseFuncDatas d
     let auxm := auxm.insertMany <| d.mapIdx (fun i v => (v.name, i+depth))
     let depth := depth + d.size
     return RuleType.node { mfuncs := d }  (← parseRuleTypeCore p depth auxm) (← parseRuleTypeCore c depth auxm)
-  | `(fol_ruleType| $[$[$d:mfuncData]? ⊢]? $t:fol_term) =>
-    let d ← (·.getD #[]) <$> (d.getD none).mapM parseFuncDatas
+  | `(fol_ruleType| $t:fol_term) =>
+    return RuleType.leaf {} (← parseTerm t auxm depth)
+  | `(fol_ruleType| $d:mfuncData ⊢ $t:fol_term) =>
+    let d ← parseFuncDatas d
     let auxm := auxm.insertMany <| d.mapIdx (fun i v => (v.name, i+depth))
     let depth := depth + d.size
     return RuleType.leaf { mfuncs := d } (← parseTerm t auxm depth)
-  | `(fol_ruleType| ($r)) => parseRuleTypeCore r depth auxm
+  | `(fol_ruleType| ($r:fol_ruleType)) => parseRuleTypeCore r depth auxm
   | _ => throwErrorAt e "invalid rule type"
 
 @[inline]
@@ -116,14 +122,15 @@ declare_syntax_cat fol_tac
 
 syntax fol_tacSeq := sepBy1IndentSemicolon(fol_tac)
 
-syntax applyArgs := "[" ((ident,+ " => ")? fol_term ),* "]"
+syntax applyArgs := "[" (("λ " ident,+ " => ")? fol_term ),* "]"
 
 syntax "intro" : fol_tac
 syntax "triv" : fol_tac
 syntax "have " ident : fol_tac
 syntax "done" : fol_tac
 syntax "·" fol_tacSeq : fol_tac
-syntax "specialize" num (applyArgs)? : fol_tac
+syntax "specialize " num (applyArgs)? : fol_tac
+syntax "apply " ident (applyArgs)? : fol_tac
 syntax "probe" : fol_tac
 
 def exceptToError : Except String α → CommandElabM α
@@ -148,7 +155,7 @@ partial def elabTacs (tacs : TSyntaxArray `fol_tac) (ps : ProofState) : CommandE
     | `(fol_tac| · $seq*) =>
       elabTacs seq.getElems (← exceptToErrorAt tac ps.focus)
       ps ← exceptToErrorAt tac ps.closeHead
-    | `(fol_tac| specialize $i $[[$[$[$params,* =>]? $val],*]]?) =>
+    | `(fol_tac| specialize $i $[[$[$[λ $params,* =>]? $val],*]]?) =>
       let .ok mfuncs := ps.head.map (·.context.mfuncs)
         | throwErrorAt tac "no goals to solve"
       let md := mfuncs.size
@@ -161,6 +168,19 @@ partial def elabTacs (tacs : TSyntaxArray `fol_tac) (ps : ProofState) : CommandE
         let params := params.mapIdx (fun i p => (p, i)) |> HashMap.empty.insertMany
         parseTermCore val depth params mfuncs md) |>.mapM id
       ps ← exceptToErrorAt tac (ps.specialize i.getNat ts)
+    | `(fol_tac| apply $n $[[$[$[λ $params,* =>]? $val],*]]?) =>
+      let .ok mfuncs := ps.head.map (·.context.mfuncs)
+        | throwErrorAt tac "no goals to solve"
+      let md := mfuncs.size
+      let mfuncs := mfuncs.mapIdx (fun i v => (v.name, i)) |> HashMap.empty.insertMany
+      let params := params.getD #[]
+        |>.map (·.map (·.getElems) |>.getD #[] |>.map (·.getId))
+      let val := val.getD #[]
+      let ts ← params.zipWith val (fun params val =>
+        let depth := params.size
+        let params := params.mapIdx (fun i p => (p, i)) |> HashMap.empty.insertMany
+        parseTermCore val depth params mfuncs md) |>.mapM id
+      ps ← exceptToErrorAt tac (ps.applyRule (defsExt.getState (← getEnv)).2 n.getId ts)
     | `(fol_tac| probe) =>
       logInfoAt tac s!"{ps}"
     | _ => throwUnsupportedSyntax
