@@ -37,7 +37,7 @@ fol_rule all.intro [φ:set→wff] ([x:set] ⊢ φ(x)) ⊢ \all y, φ(y)
 fol_rule all.elim [φ:set→wff, x:set] \all y, φ(y) ⊢ φ(x)
 
 fol_rule ex.intro [φ:set→wff, x:set] φ(x) ⊢ \ex y, φ(y)
-fol_rule ex.elim [φ:set→wff] \ex y, φ(y) ⊢ ([x:set] ⊢ φ(x))
+fol_rule ex.elim [φ:set→wff, ψ:wff] \ex y, φ(y) ⊢ \all x, imp(φ(x), ψ) ⊢ ψ
 
 fol_prove mt [φ:wff, ψ:wff] imp(ψ, φ) ⊢ imp(not(φ), not(ψ)) =>
   intro
